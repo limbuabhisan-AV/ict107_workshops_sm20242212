@@ -1,135 +1,48 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:path/path.dart' as p;
-import 'package:sqflite/sqflite.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-void main() {
+const supabaseUrl = 'https://lqnjqaaisexnbwgnznbk.supabase.co';
+const supabasePublishableKey =
+    'sb_publishable_Z2aV0av94rlXrDqFv6MrLw_7EwjTEvC';
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const StudentDatabaseApp());
+  await Supabase.initialize(
+    url: supabaseUrl,
+    publishableKey: supabasePublishableKey,
+  );
+  runApp(const SupabaseStudentApp());
 }
 
-class StudentDatabaseApp extends StatelessWidget {
-  const StudentDatabaseApp({super.key});
+class SupabaseStudentApp extends StatelessWidget {
+  const SupabaseStudentApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'ICT107 Student Database',
+      title: 'ICT107 Supabase CRUD',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.green),
         useMaterial3: true,
       ),
-      home: const StudentHomePage(),
+      home: const SupabaseStudentPage(),
     );
   }
 }
 
-class DatabaseService {
-  DatabaseService._();
-
-  static final DatabaseService instance = DatabaseService._();
-  Database? _database;
-
-  Future<Database> get database async {
-    if (_database != null) return _database!;
-    final databasePath = await getDatabasesPath();
-    final path = p.join(databasePath, 'ict107_students.db');
-    _database = await openDatabase(
-      path,
-      version: 1,
-      onCreate: (db, version) async {
-        await db.execute('''
-          CREATE TABLE students(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            student_id TEXT NOT NULL,
-            course TEXT NOT NULL
-          )
-        ''');
-      },
-    );
-    return _database!;
-  }
-
-  Future<List<Map<String, Object?>>> readStudents() async {
-    final db = await database;
-    return db.query('students', orderBy: 'id DESC');
-  }
-
-  Future<void> createStudent({
-    required String name,
-    required String studentId,
-    required String course,
-  }) async {
-    final db = await database;
-    await db.insert('students', {
-      'name': name,
-      'student_id': studentId,
-      'course': course,
-    });
-  }
-
-  Future<void> updateStudent({
-    required int id,
-    required String name,
-    required String studentId,
-    required String course,
-  }) async {
-    final db = await database;
-    await db.update(
-      'students',
-      {'name': name, 'student_id': studentId, 'course': course},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  Future<void> deleteStudent(int id) async {
-    final db = await database;
-    await db.delete('students', where: 'id = ?', whereArgs: [id]);
-  }
-
-  Future<int> importJson() async {
-    final jsonText = await rootBundle.loadString('assets/students.json');
-    final rows = jsonDecode(jsonText) as List<dynamic>;
-    final db = await database;
-    var imported = 0;
-
-    await db.transaction((transaction) async {
-      for (final row in rows.cast<Map<String, dynamic>>()) {
-        final existing = Sqflite.firstIntValue(
-          await transaction.rawQuery(
-            'SELECT COUNT(*) FROM students WHERE student_id = ?',
-            [row['student_id']],
-          ),
-        );
-        if (existing == 0) {
-          await transaction.insert('students', {
-            'name': row['name'],
-            'student_id': row['student_id'],
-            'course': row['course'],
-          });
-          imported++;
-        }
-      }
-    });
-    return imported;
-  }
-}
-
-class StudentHomePage extends StatefulWidget {
-  const StudentHomePage({super.key});
+class SupabaseStudentPage extends StatefulWidget {
+  const SupabaseStudentPage({super.key});
 
   @override
-  State<StudentHomePage> createState() => _StudentHomePageState();
+  State<SupabaseStudentPage> createState() => _SupabaseStudentPageState();
 }
 
-class _StudentHomePageState extends State<StudentHomePage> {
-  List<Map<String, Object?>> students = [];
+class _SupabaseStudentPageState extends State<SupabaseStudentPage> {
+  final client = Supabase.instance.client;
+  List<Map<String, dynamic>> students = [];
   bool loading = true;
+  String? errorMessage;
 
   @override
   void initState() {
@@ -138,15 +51,27 @@ class _StudentHomePageState extends State<StudentHomePage> {
   }
 
   Future<void> refreshStudents() async {
-    final records = await DatabaseService.instance.readStudents();
-    if (!mounted) return;
-    setState(() {
-      students = records;
-      loading = false;
-    });
+    try {
+      final response = await client
+          .from('students')
+          .select()
+          .order('id', ascending: false);
+      if (!mounted) return;
+      setState(() {
+        students = List<Map<String, dynamic>>.from(response);
+        loading = false;
+        errorMessage = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        loading = false;
+        errorMessage = error.toString();
+      });
+    }
   }
 
-  Future<void> showStudentForm([Map<String, Object?>? student]) async {
+  Future<void> showStudentForm([Map<String, dynamic>? student]) async {
     final nameController = TextEditingController(
       text: student?['name']?.toString() ?? '',
     );
@@ -160,7 +85,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text(student == null ? 'Add Student' : 'Update Student'),
+        title: Text(student == null ? 'Create Server Record' : 'Update Record'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -192,22 +117,28 @@ class _StudentHomePageState extends State<StudentHomePage> {
               final course = courseController.text.trim();
               if (name.isEmpty || studentId.isEmpty || course.isEmpty) return;
 
-              if (student == null) {
-                await DatabaseService.instance.createStudent(
-                  name: name,
-                  studentId: studentId,
-                  course: course,
-                );
-              } else {
-                await DatabaseService.instance.updateStudent(
-                  id: student['id'] as int,
-                  name: name,
-                  studentId: studentId,
-                  course: course,
+              try {
+                if (student == null) {
+                  await client.from('students').insert({
+                    'name': name,
+                    'student_id': studentId,
+                    'course': course,
+                  });
+                } else {
+                  await client.from('students').update({
+                    'name': name,
+                    'student_id': studentId,
+                    'course': course,
+                  }).eq('id', student['id']);
+                }
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+                await refreshStudents();
+              } catch (error) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Operation failed: $error')),
                 );
               }
-              if (dialogContext.mounted) Navigator.pop(dialogContext);
-              await refreshStudents();
             },
             child: Text(student == null ? 'Create' : 'Update'),
           ),
@@ -216,12 +147,12 @@ class _StudentHomePageState extends State<StudentHomePage> {
     );
   }
 
-  Future<void> importStudents() async {
-    final imported = await DatabaseService.instance.importJson();
+  Future<void> deleteStudent(Map<String, dynamic> student) async {
+    await client.from('students').delete().eq('id', student['id']);
     await refreshStudents();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$imported JSON student record(s) imported')),
+      const SnackBar(content: Text('Server record deleted')),
     );
   }
 
@@ -233,7 +164,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
         title: const Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('ICT107 Student Database'),
+            Text('ICT107 Supabase Database'),
             Text(
               'Abhisan Limbu | sm20242212',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.normal),
@@ -242,51 +173,54 @@ class _StudentHomePageState extends State<StudentHomePage> {
         ),
         actions: [
           IconButton(
-            tooltip: 'Import JSON',
-            onPressed: importStudents,
-            icon: const Icon(Icons.file_download_outlined),
+            tooltip: 'Refresh server data',
+            onPressed: refreshStudents,
+            icon: const Icon(Icons.cloud_sync_outlined),
           ),
         ],
       ),
       body: loading
           ? const Center(child: CircularProgressIndicator())
-          : students.isEmpty
-              ? const Center(
-                  child: Text('No records yet. Add a student or import JSON.'),
+          : errorMessage != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text('Supabase error:\n$errorMessage'),
+                  ),
                 )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(12),
-                  itemCount: students.length,
-                  itemBuilder: (context, index) {
-                    final student = students[index];
-                    return Card(
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          child: Text(student['id'].toString()),
-                        ),
-                        title: Text(student['name'].toString()),
-                        subtitle: Text(
-                          '${student['student_id']} - ${student['course']}',
-                        ),
-                        onTap: () => showStudentForm(student),
-                        trailing: IconButton(
-                          tooltip: 'Delete',
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: () async {
-                            await DatabaseService.instance.deleteStudent(
-                              student['id'] as int,
-                            );
-                            await refreshStudents();
-                          },
-                        ),
+              : students.isEmpty
+                  ? const Center(child: Text('No server records found.'))
+                  : RefreshIndicator(
+                      onRefresh: refreshStudents,
+                      child: ListView.builder(
+                        padding: const EdgeInsets.all(12),
+                        itemCount: students.length,
+                        itemBuilder: (context, index) {
+                          final student = students[index];
+                          return Card(
+                            child: ListTile(
+                              leading: const CircleAvatar(
+                                child: Icon(Icons.cloud_done_outlined),
+                              ),
+                              title: Text(student['name'].toString()),
+                              subtitle: Text(
+                                '${student['student_id']} - ${student['course']}',
+                              ),
+                              onTap: () => showStudentForm(student),
+                              trailing: IconButton(
+                                tooltip: 'Delete server record',
+                                icon: const Icon(Icons.delete_outline),
+                                onPressed: () => deleteStudent(student),
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                    );
-                  },
-                ),
+                    ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => showStudentForm(),
-        icon: const Icon(Icons.add),
-        label: const Text('Add Student'),
+        icon: const Icon(Icons.cloud_upload_outlined),
+        label: const Text('Add Server Record'),
       ),
     );
   }
